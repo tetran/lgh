@@ -42,7 +42,6 @@ Preferred language is %s.
 `
 
 func init() {
-	bsCmd.Flags().StringP("repo", "r", "", "Path to the git repository")
 	bsCmd.Flags().StringP("base", "b", "main", "Base branch")
 	bsCmd.Flags().StringP("target", "t", "", "Target branch")
 	bsCmd.Flags().BoolP("debug", "d", false, "Enable debug mode")
@@ -55,8 +54,6 @@ func branchSummary(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	repo, err := cmd.Flags().GetString("repo")
-	cobra.CheckErr(err)
 	base, err := cmd.Flags().GetString("base")
 	cobra.CheckErr(err)
 	tgt, err := cmd.Flags().GetString("target")
@@ -68,32 +65,45 @@ func branchSummary(cmd *cobra.Command, args []string) {
 	debug, err := cmd.Flags().GetBool("debug")
 	cobra.CheckErr(err)
 
+	current, err := os.Getwd()
+	cobra.CheckErr(err)
+
+	cfg := config.Config{
+		ApiKey: key,
+		Lang:   viper.GetString("lang"),
+	}
 	cli := &cli{
-		cfg: config.Config{
-			ApiKey: key,
-			Lang:   viper.GetString("lang"),
-		},
-		path:  repo,
-		base:  base,
-		tgt:   tgt,
-		debug: debug,
+		repo:   &git.Repository{Path: current},
+		client: &openai.Client{Config: &openai.Config{ApiKey: cfg.ApiKey}},
+		cfg:    cfg,
+		base:   base,
+		tgt:    tgt,
+		debug:  debug,
 	}
 	err = cli.run()
 	cobra.CheckErr(err)
 }
 
 type cli struct {
-	cfg   config.Config
-	path  string
-	base  string
-	tgt   string
-	debug bool
+	repo   *git.Repository
+	client *openai.Client
+	cfg    config.Config
+	base   string
+	tgt    string
+	debug  bool
 }
 
 func (c *cli) run() error {
+	if !c.repo.IsGitRepository() {
+		return fmt.Errorf("not a git repository")
+	}
+
 	home, err := os.UserHomeDir()
-	cobra.CheckErr(err)
-	work := filepath.Join(home, config.WorkDir, "tmp", filepath.Base(c.path))
+	if err != nil {
+		return err
+	}
+
+	work := filepath.Join(home, config.WorkDir, "tmp", filepath.Base(c.repo.Path))
 	err = os.RemoveAll(work)
 	if err != nil {
 		return err
@@ -123,8 +133,7 @@ func (c *cli) run() error {
 }
 
 func (c *cli) saveCommits(outdir string) error {
-	repo := &git.Repository{Path: c.path}
-	commits, err := repo.CommitsOnBranch(c.tgt, c.base)
+	commits, err := c.repo.CommitsOnBranch(c.tgt, c.base)
 	if err != nil {
 		return err
 	}
@@ -190,7 +199,6 @@ func (c *cli) saveCommits(outdir string) error {
 func (c *cli) askOpenai(logd, outd string) error {
 	fmt.Println("Begin to ask OpenAI...")
 
-	client := &openai.Client{Config: &openai.Config{ApiKey: c.cfg.ApiKey}}
 	system := &openai.Message{
 		Role:    "system",
 		Content: "You are an expert project manager. Your mission is to make a report on the changes made in the git repository for the client.",
@@ -227,7 +235,7 @@ func (c *cli) askOpenai(logd, outd string) error {
 		if c.debug {
 			fmt.Println("Request:", messages[1].Content)
 		}
-		res, err := client.Chat(messages)
+		res, err := c.client.Chat(messages)
 		if err != nil {
 			return err
 		}

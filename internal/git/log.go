@@ -3,6 +3,7 @@ package git
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -27,6 +28,17 @@ type FileDiff struct {
 }
 
 func (r *Repository) CommitsOnBranch(branch, parent string) ([]Commit, error) {
+	// check if the branch exists
+	_, err := r.execGit("rev-parse", "--verify", branch)
+	if err != nil {
+		return nil, fmt.Errorf("branch `%s` does not exist", branch)
+	}
+	// check if the parent exists
+	_, err = r.execGit("rev-parse", "--verify", parent)
+	if err != nil {
+		return nil, fmt.Errorf("parent branch `%s` does not exist", parent)
+	}
+
 	out, err := r.execGit("merge-base", parent, branch)
 	if err != nil {
 		return nil, err
@@ -40,6 +52,11 @@ func (r *Repository) CommitsOnBranch(branch, parent string) ([]Commit, error) {
 	}
 
 	return r.parseLog(output)
+}
+
+func (r *Repository) IsGitRepository() bool {
+	_, err := r.execGit("rev-parse", "--is-inside-work-tree")
+	return err == nil
 }
 
 func (r *Repository) execGit(args ...string) ([]byte, error) {
