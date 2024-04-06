@@ -37,11 +37,6 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", fmt.Sprintf("config file (default is $HOME/%s/config.yaml)", config.WorkDir))
-	rootCmd.PersistentFlags().String("openai-api-key", "", "OpenAI API key")
-	rootCmd.PersistentFlags().String("lang", "en", "Output language")
-
-	viper.BindPFlag("openai-api-key", rootCmd.PersistentFlags().Lookup("openai-api-key"))
-	viper.BindPFlag("lang", rootCmd.PersistentFlags().Lookup("lang"))
 
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(bsCmd)

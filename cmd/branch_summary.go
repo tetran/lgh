@@ -54,6 +54,7 @@ func branchSummary(cmd *cobra.Command, args []string) {
 		fmt.Println("OpenAI API key is required. Please set it in the config file (using `lgh config` command) or pass it via the --openai-api-key flag.")
 		os.Exit(1)
 	}
+	model := viper.GetString("openai-model")
 
 	base, err := cmd.Flags().GetString("base")
 	cobra.CheckErr(err)
@@ -75,7 +76,7 @@ func branchSummary(cmd *cobra.Command, args []string) {
 	}
 	cli := &cli{
 		repo:   &git.Repository{Path: current},
-		client: &openai.Client{Config: &openai.Config{ApiKey: cfg.ApiKey}},
+		client: &openai.Client{ApiKey: cfg.ApiKey, Model: model},
 		cfg:    cfg,
 		base:   base,
 		tgt:    tgt,
