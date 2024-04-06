@@ -102,6 +102,10 @@ func (r *Repository) parseLog(output []byte) ([]Commit, error) {
 		}
 	}
 
+	if currentDiff != nil && currentCommit != nil {
+		currentCommit.Diffs = append(currentCommit.Diffs, *currentDiff)
+	}
+
 	if currentCommit != nil {
 		commits = append(commits, *currentCommit)
 	}
