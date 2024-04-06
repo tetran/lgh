@@ -4,6 +4,7 @@ Copyright © 2024 Koichi Kaneshige <coarse.ground@gmail.com>
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -278,10 +279,14 @@ func (c *cli) readCommitLog(filename string) (string, error) {
 	}
 	defer file.Close()
 
-	buf := make([]byte, 1024)
-	n, err := file.Read(buf)
-	if err != nil {
-		return "", err
+	buf := make([]byte, 0, 1024)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(buf, 2048*1024)
+
+	var diff string
+	for scanner.Scan() {
+		diff += scanner.Text() + "\n"
 	}
-	return string(buf[:n]), nil
+
+	return diff, nil
 }
