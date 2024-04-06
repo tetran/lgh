@@ -27,15 +27,19 @@ var (
 )
 
 const instruction = `
-Below is the git commit log. Please summarize the changes briefly, using bullet points and word-for-word descriptions.
-Focus on the purpose of each commit, not the minor file-by-file fixes.
+## Instruction:
+Please summarize the following git commits briefly, using bullet points and word-for-word descriptions.
+Focus on the purpose of each commit, ignore the minor file-by-file fixes.
 Preferred language is %s.
-### Expected Output Format:
-* Add feature X to screen A
+
+## Expected Output Format:
+* Add feature X to screen A (if the screen name is not clear, assume it based on the file name)
 * Change B setting from Y to Z
 * Fix C bug
------ Commits -----
-%s`
+
+## Commits to summarize:
+%s
+`
 
 func init() {
 	bsCmd.Flags().StringP("repo", "r", "", "Path to the git repository")
@@ -147,17 +151,17 @@ func (c *cli) saveCommits(outdir string) error {
 		// if err != nil {
 		// 	return err
 		// }
-		_, err = file.WriteString(fmt.Sprintf("## Message: %s\n", strings.TrimSpace(commit.Message)))
+		_, err = file.WriteString(fmt.Sprintf("### Message: %s\n", strings.TrimSpace(commit.Message)))
 		if err != nil {
 			return err
 		}
 
-		_, err = file.WriteString("## Diffs:\n")
+		_, err = file.WriteString("### Diffs:\n")
 		if err != nil {
 			return err
 		}
 		for _, diff := range commit.Diffs {
-			_, err = file.WriteString(fmt.Sprintf("### File: %s\n", diff.Path))
+			_, err = file.WriteString(fmt.Sprintf("#### File: %s\n", diff.Path))
 			if err != nil {
 				return err
 			}
@@ -248,7 +252,7 @@ func (c *cli) askOpenai(logd, outd string) error {
 
 	fmt.Printf("\nDONE!\nToken usage: %d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
 
-	o := fmt.Sprintf("%s_%s.txt", c.tgt, time.Now().Format("20060102150405"))
+	o := fmt.Sprintf("%s_%s.txt", strings.ReplaceAll(c.tgt, "/", "__"), time.Now().Format("20060102150405"))
 	err = os.Rename(outfile.Name(), o)
 	if err != nil {
 		return err
