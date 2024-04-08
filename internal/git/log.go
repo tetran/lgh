@@ -16,6 +16,7 @@ type Commit struct {
 	Hash    string
 	Author  string
 	Date    string
+	IsMerge bool
 	Message string
 	Diffs   []FileDiff
 }
@@ -24,7 +25,7 @@ type FileDiff struct {
 	Path         string
 	IndexBefore  string
 	IndexAfter   string
-	DiffContents string
+	DiffContents []string
 }
 
 func (r *Repository) CommitsOnBranch(branch, parent string) ([]Commit, error) {
@@ -108,12 +109,10 @@ func (r *Repository) parseLog(output []byte) ([]Commit, error) {
 			}
 		} else if strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- ") {
 			// skip
+		} else if strings.HasPrefix(line, "Merge: ") {
+			currentCommit.IsMerge = true
 		} else if currentDiff != nil {
-			// Skip SVG content
-			if strings.Contains(currentDiff.Path, ".svg") {
-				continue
-			}
-			currentDiff.DiffContents += line + "\n"
+			currentDiff.DiffContents = append(currentDiff.DiffContents, line)
 		} else {
 			currentCommit.Message += line + "\n"
 		}

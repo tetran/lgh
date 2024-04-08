@@ -4,12 +4,10 @@ Copyright © 2024 Koichi Kaneshige <coarse.ground@gmail.com>
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -25,20 +23,27 @@ var (
 		Long:  ``,
 		Run:   branchSummary,
 	}
+	system = &openai.Message{
+		Role:    "system",
+		Content: "You are an expert project manager. Your mission is to make a report on the changes made in the git repository for the client.",
+	}
 )
 
 const instruction = `
 ## Instruction:
-Please summarize the following git commits briefly, using bullet points and word-for-word descriptions.
-Focus on the purpose of each commit, ignore the minor file-by-file fixes.
-Preferred language is %s.
+Please summarize the file change briefly, using bullet points and word-for-word descriptions.
+* Focus on the purpose of the change.
+* Only the filename and changes are required.
+* Preferred language is %s.
 
 ## Expected Output Format:
+### Filename: file.ext (added/modified/deleted)
+### Changes:
 * Add feature X to screen A (if the screen name is not clear, assume it based on the file name)
 * Change B setting from Y to Z
 * Fix C bug
 
-## Commits to summarize:
+## File change to summarize:
 %s
 `
 
@@ -111,22 +116,13 @@ func (c *cli) run() error {
 		return err
 	}
 
-	commitLogDir := filepath.Join(work, "commits")
-	err = os.MkdirAll(commitLogDir, 0700)
-	if err != nil {
-		return err
-	}
 	outdir := filepath.Join(work, "out")
 	err = os.MkdirAll(outdir, 0700)
 	if err != nil {
 		return err
 	}
 
-	err = c.saveCommits(commitLogDir)
-	if err != nil {
-		return err
-	}
-	err = c.askOpenai(commitLogDir, outdir)
+	err = c.summarize(outdir)
 	if err != nil {
 		return err
 	}
@@ -134,160 +130,157 @@ func (c *cli) run() error {
 	return nil
 }
 
-func (c *cli) saveCommits(outdir string) error {
+func (c *cli) commitText(commit git.Commit) (string, []string, error) {
+	info := fmt.Sprintf("### Message: %s\n### Change list:\n", strings.TrimSpace(commit.Message))
+	bodies := make([]string, 0, len(commit.Diffs))
+	for _, diff := range commit.Diffs {
+		dcs := make([]string, 0, len(diff.DiffContents))
+		st := "MOD"
+		var bytes int
+		for _, dc := range diff.DiffContents {
+			if strings.HasPrefix(dc, "new file mode ") {
+				st = "ADD"
+			} else if strings.HasPrefix(dc, "deleted file mode ") {
+				st = "DEL"
+			} else if strings.HasPrefix(dc, "Binary files ") || strings.HasSuffix(diff.Path, ".svg") {
+				// skip binary files
+			} else {
+				// Limit the size of the diff contents to 40KB because of the token limit.
+				if bytes+len(dc) > 40*1024 {
+					break
+				}
+				dcs = append(dcs, strings.TrimSpace(dc))
+				bytes += len(dc)
+			}
+		}
+		b := fmt.Sprintf("### File: %s\n", diff.Path)
+		if len(dcs) > 0 {
+			b += "```\n" + strings.Join(dcs, "\n") + "\n```\n"
+		}
+		bodies = append(bodies, b)
+		info += fmt.Sprintf("%s %s\n", st, diff.Path)
+	}
+
+	return info, bodies, nil
+}
+
+func (c *cli) summarize(outdir string) error {
 	commits, err := c.repo.CommitsOnBranch(c.tgt, c.base)
 	if err != nil {
 		return err
 	}
 	num := len(commits)
 	fmt.Println("Number of commits:", num)
-	for i, commit := range commits {
-		filename := filepath.Join(outdir, fmt.Sprintf("%03d.txt", num-i))
-		file, err := os.Create(filename)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
 
-		// _, err = file.WriteString(fmt.Sprintf("## Hash: %s\n", commit.Hash))
-		// if err != nil {
-		// 	return err
-		// }
-		// _, err = file.WriteString(fmt.Sprintf("Author: %s\n", commit.Author))
-		// if err != nil {
-		// 	fmt.Println("Failed to write commit author:", err)
-		// 	return
-		// }
-		// _, err = file.WriteString(fmt.Sprintf("## Date: %s\n", commit.Date))
-		// if err != nil {
-		// 	return err
-		// }
-		_, err = file.WriteString(fmt.Sprintf("### Message: %s\n", strings.TrimSpace(commit.Message)))
-		if err != nil {
-			return err
-		}
-
-		_, err = file.WriteString("### Diffs:\n")
-		if err != nil {
-			return err
-		}
-		for _, diff := range commit.Diffs {
-			_, err = file.WriteString(fmt.Sprintf("#### File: %s\n", diff.Path))
-			if err != nil {
-				return err
-			}
-			// _, err = file.WriteString(fmt.Sprintf("IndexBefore: %s\n", diff.IndexBefore))
-			// if err != nil {
-			// 	fmt.Println("Failed to write diff index before:", err)
-			// 	return
-			// }
-			// _, err = file.WriteString(fmt.Sprintf("IndexAfter: %s\n", diff.IndexAfter))
-			// if err != nil {
-			// 	fmt.Println("Failed to write diff index after:", err)
-			// 	return
-			// }
-			_, err = file.WriteString(fmt.Sprintf("```\n%s```\n\n", diff.DiffContents))
-			if err != nil {
-				return err
-			}
-		}
-
-		file.Sync()
-		file.Close()
-	}
-	return nil
-}
-
-func (c *cli) askOpenai(logd, outd string) error {
-	fmt.Println("Begin to ask OpenAI...")
-
-	system := &openai.Message{
-		Role:    "system",
-		Content: "You are an expert project manager. Your mission is to make a report on the changes made in the git repository for the client.",
-	}
-
-	outfile, err := os.Create(filepath.Join(outd, "out.txt"))
-	if err != nil {
-		return err
-	}
-	defer outfile.Close()
-
-	files, err := os.ReadDir(logd)
-	if err != nil {
-		return err
-	}
 	prompt, completion := 0, 0
-	for i, file := range files {
-		if c.debug {
-			fmt.Println("File:", file.Name())
-		}
-
-		diff, err := c.readCommitLog(filepath.Join(logd, file.Name()))
+	for i, commit := range commits {
+		outd := filepath.Join(outdir, fmt.Sprintf("c-%03d", i+1))
+		err = os.MkdirAll(outd, 0700)
 		if err != nil {
 			return err
 		}
 
-		messages := []*openai.Message{
-			system,
-			{
-				Role:    "user",
-				Content: fmt.Sprintf(instruction, c.cfg.FullLang(), diff),
+		info, bodies, err := c.commitText(commit)
+		if err != nil {
+			return err
+		}
+		if c.debug {
+			fmt.Println("Commit:", i+1)
+			fmt.Println(info)
+		}
+
+		infofile, err := os.Create(filepath.Join(outd, "info.txt"))
+		if err != nil {
+			return err
+		}
+		if commit.IsMerge {
+			_, err = infofile.WriteString(fmt.Sprintf("[This is a merge commit]\n%s", info))
+			if err != nil {
+				return err
+			}
+			continue
+		}
+
+		_, err = infofile.WriteString(info)
+		if err != nil {
+			return err
+		}
+
+		numDiffs := len(commit.Diffs)
+		sps := []*openai.Message{
+			system, {
+				Role:    "system",
+				Content: fmt.Sprintf("Below is the overview of this entire commit. Take it into account as needed:\n%s\n", info),
 			},
 		}
-		if c.debug {
-			fmt.Println("Request:", messages[1].Content)
-		}
-		res, err := c.client.Chat(messages)
-		if err != nil {
-			return err
-		}
-		if c.debug {
-			fmt.Println("\nResponse:\n", res.Choices[0].Message.Content)
-			fmt.Println("Prompt tokens:", res.Usage.PromptTokens)
-			fmt.Println("Completion tokens:", res.Usage.CompletionTokens)
-			fmt.Println("Total tokens:", res.Usage.TotalTokens)
-		}
-		prompt += res.Usage.PromptTokens
-		completion += res.Usage.CompletionTokens
+		for j, body := range bodies {
+			outfile, err := os.Create(filepath.Join(outd, fmt.Sprintf("%03d.txt", numDiffs-j)))
+			if err != nil {
+				return err
+			}
 
-		_, err = outfile.WriteString(fmt.Sprintf("## Change %d\n%s\n", i+1, res.Choices[0].Message.Content))
-		if err != nil {
-			return err
+			res, err := c.askOpenai(sps, body)
+			if err != nil {
+				return err
+			}
+			if c.debug {
+				fmt.Println("\nResponse:\n", res.Choices[0].Message.Content)
+				fmt.Println("Usages:\n", res.Usage)
+			}
+			prompt += res.Usage.PromptTokens
+			completion += res.Usage.CompletionTokens
+
+			_, err = outfile.WriteString(res.Choices[0].Message.Content)
+			if err != nil {
+				return err
+			}
 		}
 
-		outfile.Sync()
-
-		fmt.Print(".")
+		// TODO: Summary of the commit
 	}
+
+	// TODO: Summary of the branch (all commits)
 
 	fmt.Printf("\nDONE!\nToken usage: %d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
 
-	o := fmt.Sprintf("%s_%s.txt", strings.ReplaceAll(c.tgt, "/", "__"), time.Now().Format("20060102150405"))
-	err = os.Rename(outfile.Name(), o)
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("\nOutput file:", o)
-
 	return nil
 }
 
-func (c *cli) readCommitLog(filename string) (string, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
+func (c *cli) askOpenai(system []*openai.Message, diff string) (*openai.ChatResponse, error) {
+	messages := append(system, &openai.Message{
+		Role:    "user",
+		Content: fmt.Sprintf(instruction, c.cfg.FullLang(), diff),
+	})
 
-	buf := make([]byte, 0, 1024)
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(buf, 2048*1024)
-
-	var diff string
-	for scanner.Scan() {
-		diff += scanner.Text() + "\n"
+	if c.debug {
+		fmt.Printf("Prompt:\n%s\n%s", messages[1].Content, messages[2].Content)
 	}
 
-	return diff, nil
+	return c.client.Chat(messages)
 }
+
+// func (c *cli) read(path string) (string, error) {
+// 	file, err := os.Open(path)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	defer file.Close()
+
+// 	scanner := bufio.NewScanner(file)
+// 	buf := make([]byte, 10000)
+// 	scanner.Buffer(buf, 1000000)
+// 	var lines []string
+// 	var totalBytes int
+// 	for scanner.Scan() {
+// 		totalBytes += len(scanner.Bytes())
+// 		if totalBytes > 40*1024 {
+// 			break
+// 		}
+// 		lines = append(lines, scanner.Text())
+// 	}
+// 	if err := scanner.Err(); err != nil {
+// 		return "", err
+// 	}
+
+// 	return strings.Join(lines, "\n"), nil
+// }
