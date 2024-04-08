@@ -29,23 +29,39 @@ var (
 	}
 )
 
-const instruction = `
-## Instruction:
-Please summarize the file change briefly, using bullet points and word-for-word descriptions.
-* Focus on the purpose of the change.
-* Only the filename and changes are required.
-* Preferred language is %s.
+const (
+	inst_d = `
+	# Instruction:
+	Please summarize the file change briefly, using bullet points and word-for-word descriptions.
+	* Focus on the purpose of the change.
+	* Only the filename and changes are required.
+	* Preferred language is %s.
 
-## Expected Output Format:
-### Filename: file.ext (added/modified/deleted)
-### Changes:
-* Add feature X to screen A (if the screen name is not clear, assume it based on the file name)
-* Change B setting from Y to Z
-* Fix C bug
+	# Expected Output Format:
+	### file.ext (ADD/MOD/DEL)
+		* Add feature X to screen A (if the screen name is not clear, assume it based on the file name)
+		* Change B setting from Y to Z
+		* Fix C bug
 
-## File change to summarize:
-%s
-`
+	# File change to summarize:
+	%s
+	`
+	inst_c = `
+	# Instruction:
+	Please summarize the git commit briefly, using bullet points and word-for-word descriptions, such as release notes.
+	* Focus on the purpose of the commit, ignore the file-level details.
+	* Preferred language is %s.
+
+	# Expected Output Format:
+	### Summary
+		* Add feature X to screen A (if the screen name is not clear, assume it based on the file name)
+		* Change B setting from Y to Z
+		* Fix C bug
+
+	# Commit to summarize:
+	%s
+	`
+)
 
 func init() {
 	bsCmd.Flags().StringP("base", "b", "main", "Base branch")
@@ -131,7 +147,7 @@ func (c *cli) run() error {
 }
 
 func (c *cli) commitText(commit git.Commit) (string, []string, error) {
-	info := fmt.Sprintf("### Message: %s\n### Change list:\n", strings.TrimSpace(commit.Message))
+	info := fmt.Sprintf("## Message\n%s\n## All change list:\n", strings.TrimSpace(commit.Message))
 	bodies := make([]string, 0, len(commit.Diffs))
 	for _, diff := range commit.Diffs {
 		dcs := make([]string, 0, len(diff.DiffContents))
@@ -174,89 +190,116 @@ func (c *cli) summarize(outdir string) error {
 
 	prompt, completion := 0, 0
 	for i, commit := range commits {
-		outd := filepath.Join(outdir, fmt.Sprintf("c-%03d", i+1))
-		err = os.MkdirAll(outd, 0700)
-		if err != nil {
-			return err
-		}
-
 		info, bodies, err := c.commitText(commit)
 		if err != nil {
 			return err
 		}
 		if c.debug {
-			fmt.Println("Commit:", i+1)
-			fmt.Println(info)
+			fmt.Printf("----- Commit -----\n---- num ---\n%d\n--- info ---\n%s", i+1, info)
 		}
 
-		infofile, err := os.Create(filepath.Join(outd, "info.txt"))
-		if err != nil {
-			return err
-		}
 		if commit.IsMerge {
-			_, err = infofile.WriteString(fmt.Sprintf("[This is a merge commit]\n%s", info))
+			file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("c2-%03d", num-i)))
 			if err != nil {
 				return err
 			}
+			defer file.Close()
+
+			_, err = file.WriteString(fmt.Sprintf("[This is a merge commit]\n%s", info))
+			if err != nil {
+				return err
+			}
+
 			continue
 		}
 
-		_, err = infofile.WriteString(info)
+		file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("c1-%03d", num-i)))
 		if err != nil {
 			return err
 		}
+		defer file.Close()
 
-		numDiffs := len(commit.Diffs)
+		logs := fmt.Sprintf("%s\n## Change details:\n", info)
 		sps := []*openai.Message{
 			system, {
 				Role:    "system",
-				Content: fmt.Sprintf("Below is the overview of this entire commit. Take it into account as needed:\n%s\n", info),
+				Content: fmt.Sprintf("Below is the overview of this entire commit. Take it into account as needed:\n%s", info),
 			},
 		}
-		for j, body := range bodies {
-			outfile, err := os.Create(filepath.Join(outd, fmt.Sprintf("%03d.txt", numDiffs-j)))
+		for _, body := range bodies {
+			messages := append(sps, &openai.Message{
+				Role:    "user",
+				Content: fmt.Sprintf(inst_d, c.cfg.FullLang(), body),
+			})
+			if c.debug {
+				fmt.Printf("\n----- Prompts -----\n")
+				for _, m := range messages {
+					fmt.Printf("--- %s --- \n%s\n", m.Role, m.Content)
+				}
+			}
+			res, err := c.client.Chat(messages)
 			if err != nil {
 				return err
 			}
 
-			res, err := c.askOpenai(sps, body)
-			if err != nil {
-				return err
-			}
 			if c.debug {
-				fmt.Println("\nResponse:\n", res.Choices[0].Message.Content)
-				fmt.Println("Usages:\n", res.Usage)
+				fmt.Println("\n----- Response -----\n", res.Choices[0].Message.Content)
+				fmt.Printf("\n----- Usages -----\ntotal: %d (prompt: %d, completion: %d)", res.Usage.TotalTokens, res.Usage.PromptTokens, res.Usage.CompletionTokens)
 			}
 			prompt += res.Usage.PromptTokens
 			completion += res.Usage.CompletionTokens
 
-			_, err = outfile.WriteString(res.Choices[0].Message.Content)
-			if err != nil {
-				return err
-			}
+			logs += res.Choices[0].Message.Content + "\n"
 		}
 
-		// TODO: Summary of the commit
+		_, err = file.WriteString(logs)
+		if err != nil {
+			return err
+		}
+
+		err = c.sumCommit(logs, outdir, num-i)
+		if err != nil {
+			return err
+		}
 	}
 
 	// TODO: Summary of the branch (all commits)
 
-	fmt.Printf("\nDONE!\nToken usage: %d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
+	if c.debug {
+		fmt.Printf("\n----- Total token usage ----- \n%d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
+	}
 
 	return nil
 }
 
-func (c *cli) askOpenai(system []*openai.Message, diff string) (*openai.ChatResponse, error) {
-	messages := append(system, &openai.Message{
-		Role:    "user",
-		Content: fmt.Sprintf(instruction, c.cfg.FullLang(), diff),
-	})
-
-	if c.debug {
-		fmt.Printf("Prompt:\n%s\n%s", messages[1].Content, messages[2].Content)
+func (c *cli) sumCommit(logs, dir string, fnum int) error {
+	csum := []*openai.Message{
+		system, {
+			Role:    "user",
+			Content: fmt.Sprintf(inst_c, c.cfg.FullLang(), logs),
+		},
 	}
 
-	return c.client.Chat(messages)
+	res, err := c.client.Chat(csum)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.Create(filepath.Join(dir, fmt.Sprintf("c2-%03d", fnum)))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = file.WriteString(res.Choices[0].Message.Content + "\n")
+	if err != nil {
+		return err
+	}
+	if c.debug {
+		fmt.Printf("\n----- Saved file ----- \n%s\n", filepath.Join(dir, fmt.Sprintf("c2-%03d", fnum)))
+	}
+
+	return nil
 }
 
 // func (c *cli) read(path string) (string, error) {
