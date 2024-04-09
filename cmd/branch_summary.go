@@ -205,24 +205,18 @@ func (c *cli) summarize(outdir string) error {
 	fmt.Println("Number of commits:", num)
 
 	prompt, completion := 0, 0
-	if c.debug {
-		defer func() {
-			fmt.Printf("\n----- Total token usage ----- \n%d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
-		}()
-	}
+	defer func() {
+		fmt.Printf("\n----- Total token usage ----- \n%d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
+	}()
 	var allSummaries string
 	for i, commit := range commits {
 		if commit.IsMerge {
-			file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("CS%05d", num-i)))
-			if err != nil {
+			if err = c.saveFile(
+				filepath.Join(outdir, fmt.Sprintf("CS%05d", num-i)),
+				fmt.Sprintf("* Merged: %s", commit.Message)); err != nil {
 				return err
 			}
-			defer file.Close()
-
-			_, err = file.WriteString(fmt.Sprintf("* Merged: %s", commit.Message))
-			if err != nil {
-				return err
-			}
+			fmt.Print(".")
 			continue
 		}
 
@@ -230,11 +224,6 @@ func (c *cli) summarize(outdir string) error {
 		if err != nil {
 			return err
 		}
-		file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("CL%05d", num-i)))
-		if err != nil {
-			return err
-		}
-		defer file.Close()
 
 		logs := fmt.Sprintf("%s\n## Change details:\n", info)
 		sps := []*openai.Message{
@@ -266,17 +255,16 @@ func (c *cli) summarize(outdir string) error {
 			logs += res.Choices[0].Message.Content + "\n"
 		}
 
-		_, err = file.WriteString(logs)
-		if err != nil {
+		if err = c.saveFile(filepath.Join(outdir, fmt.Sprintf("CL%05d", num-i)), logs); err != nil {
 			return err
 		}
-
 		sum, err := c.sumCommit(logs, outdir, num-i)
 		if err != nil {
 			return err
 		}
 
 		allSummaries += sum
+		fmt.Print(".")
 	}
 
 	messages := []*openai.Message{
@@ -296,23 +284,14 @@ func (c *cli) summarize(outdir string) error {
 		fmt.Printf("\n----- Response -----\n%s\n", res.Choices[0].Message.Content)
 		fmt.Printf("\n----- Usages -----\ntotal: %d (prompt: %d, completion: %d)\n", res.Usage.TotalTokens, res.Usage.PromptTokens, res.Usage.CompletionTokens)
 	}
-
-	path := filepath.Join(outdir, "summary.txt")
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = file.WriteString(res.Choices[0].Message.Content + "\n")
-	if err != nil {
-		return err
-	}
-	if c.debug {
-		fmt.Printf("\n----- Saved file ----- \n%s\n", path)
-	}
-
 	prompt += res.Usage.PromptTokens
 	completion += res.Usage.CompletionTokens
+
+	if err = c.saveFile(
+		filepath.Join(outdir, "summary.txt"),
+		res.Choices[0].Message.Content); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -332,24 +311,36 @@ func (c *cli) sumCommit(logs, dir string, fnum int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	content := res.Choices[0].Message.Content + "\n"
 
 	path := filepath.Join(dir, fmt.Sprintf("CS%05d", fnum))
-	file, err := os.Create(path)
-	if err != nil {
+	if err = c.saveFile(path, content); err != nil {
 		return "", err
 	}
-	defer file.Close()
 
-	content := res.Choices[0].Message.Content + "\n"
-	_, err = file.WriteString(content)
-	if err != nil {
-		return "", err
-	}
 	if c.debug {
 		fmt.Printf("\n----- Saved file ----- \n%s\n", path)
 	}
 
 	return content, nil
+}
+
+func (c *cli) saveFile(path, content string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.WriteString(content)
+	if err != nil {
+		return err
+	}
+
+	if c.debug {
+		fmt.Printf("\n----- Saved file ----- \n%s\n", path)
+	}
+
+	return nil
 }
 
 func (c *cli) pp(messages []*openai.Message) {
