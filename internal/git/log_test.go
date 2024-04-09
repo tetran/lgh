@@ -119,11 +119,3 @@ func createCommit(tempDir, testFile, fileContent, message string) error {
 	}
 	return nil
 }
-
-type fixedPathProvider struct {
-	path string
-}
-
-func (fpp *fixedPathProvider) Path() string {
-	return fpp.path
-}

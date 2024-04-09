@@ -35,18 +35,15 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
-type Config struct {
-	ApiKey string
-}
-
 type Client struct {
-	Config *Config
+	ApiKey string
+	Model  string
 }
 
 func (c *Client) Chat(messages []*Message) (*ChatResponse, error) {
 	url := "https://api.openai.com/v1/chat/completions"
 	creq := &ChatRequest{
-		Model:       "gpt-3.5-turbo",
+		Model:       c.Model,
 		Messages:    messages,
 		Temperature: 0.7,
 	}
@@ -65,10 +62,10 @@ func (c *Client) Chat(messages []*Message) (*ChatResponse, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.Config.ApiKey)
+	req.Header.Set("Authorization", "Bearer "+c.ApiKey)
 
 	client := http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 60 * time.Second,
 	}
 	res, err := client.Do(req)
 	if err != nil {
