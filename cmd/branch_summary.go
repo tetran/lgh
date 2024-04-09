@@ -25,7 +25,7 @@ var (
 	}
 	system = &openai.Message{
 		Role:    "system",
-		Content: "You are an expert project manager. Your mission is to make a report on the changes made in the git repository for the client.",
+		Content: "Act as an expert project manager. Your mission is to make a report on the changes made in the git repository for the client.",
 	}
 )
 
@@ -34,31 +34,47 @@ const (
 	# Instruction:
 	Please summarize the file change briefly, using bullet points and word-for-word descriptions.
 	* Focus on the purpose of the change.
-	* Only the filename and changes are required.
+	* Just return the change of the following file.
+	* Only the filename and brief changes are required.
 	* Preferred language is %s.
 
 	# Expected Output Format:
 	### file.ext (ADD/MOD/DEL)
-		* Add feature X to screen A (if the screen name is not clear, assume it based on the file name)
-		* Change B setting from Y to Z
-		* Fix C bug
+	* Add feature X
+	* Change B setting
+	* Fix C bug
 
 	# File change to summarize:
 	%s
 	`
 	inst_c = `
 	# Instruction:
-	Please summarize the git commit briefly, using bullet points and word-for-word descriptions, such as release notes.
+	Please summarize the git commit briefly, using bullet points and word-for-word descriptions, like release notes.
 	* Focus on the purpose of the commit, ignore the file-level details.
 	* Preferred language is %s.
 
 	# Expected Output Format:
-	### Summary
-		* Add feature X to screen A (if the screen name is not clear, assume it based on the file name)
-		* Change B setting from Y to Z
-		* Fix C bug
+	* Add feature X to screen A (if the screen name is not clear, assume it based on the file name)
+	* Change B setting from Y to Z
+	* Fix C bug
 
 	# Commit to summarize:
+	%s
+	`
+	inst_b = `
+	# Instruction:
+	Please summarize the changes briefly, using bullet points and word-for-word descriptions, like release notes.
+	* If there are any duplicate or similar commits, combine them, the first one should be the main source.
+	* Combine related items in one section.
+	* Preferred language is %s.
+
+	# Expected Output Format:
+	## Implement feature X
+	* details of the feature and the implementation
+	## Fix C bug
+	* details of the bug and the fix
+
+	# Changes to summarize:
 	%s
 	`
 )
@@ -189,31 +205,32 @@ func (c *cli) summarize(outdir string) error {
 	fmt.Println("Number of commits:", num)
 
 	prompt, completion := 0, 0
+	if c.debug {
+		defer func() {
+			fmt.Printf("\n----- Total token usage ----- \n%d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
+		}()
+	}
+	var allSummaries string
 	for i, commit := range commits {
-		info, bodies, err := c.commitText(commit)
-		if err != nil {
-			return err
-		}
-		if c.debug {
-			fmt.Printf("----- Commit -----\n---- num ---\n%d\n--- info ---\n%s", i+1, info)
-		}
-
 		if commit.IsMerge {
-			file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("c2-%03d", num-i)))
+			file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("CS%05d", num-i)))
 			if err != nil {
 				return err
 			}
 			defer file.Close()
 
-			_, err = file.WriteString(fmt.Sprintf("[This is a merge commit]\n%s", info))
+			_, err = file.WriteString(fmt.Sprintf("* Merged: %s", commit.Message))
 			if err != nil {
 				return err
 			}
-
 			continue
 		}
 
-		file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("c1-%03d", num-i)))
+		info, bodies, err := c.commitText(commit)
+		if err != nil {
+			return err
+		}
+		file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("CL%05d", num-i)))
 		if err != nil {
 			return err
 		}
@@ -232,10 +249,7 @@ func (c *cli) summarize(outdir string) error {
 				Content: fmt.Sprintf(inst_d, c.cfg.FullLang(), body),
 			})
 			if c.debug {
-				fmt.Printf("\n----- Prompts -----\n")
-				for _, m := range messages {
-					fmt.Printf("--- %s --- \n%s\n", m.Role, m.Content)
-				}
+				c.pp(messages)
 			}
 			res, err := c.client.Chat(messages)
 			if err != nil {
@@ -243,8 +257,8 @@ func (c *cli) summarize(outdir string) error {
 			}
 
 			if c.debug {
-				fmt.Println("\n----- Response -----\n", res.Choices[0].Message.Content)
-				fmt.Printf("\n----- Usages -----\ntotal: %d (prompt: %d, completion: %d)", res.Usage.TotalTokens, res.Usage.PromptTokens, res.Usage.CompletionTokens)
+				fmt.Printf("\n----- Response -----\n%s\n", res.Choices[0].Message.Content)
+				fmt.Printf("\n----- Usages -----\ntotal: %d (prompt: %d, completion: %d)\n", res.Usage.TotalTokens, res.Usage.PromptTokens, res.Usage.CompletionTokens)
 			}
 			prompt += res.Usage.PromptTokens
 			completion += res.Usage.CompletionTokens
@@ -257,49 +271,92 @@ func (c *cli) summarize(outdir string) error {
 			return err
 		}
 
-		err = c.sumCommit(logs, outdir, num-i)
+		sum, err := c.sumCommit(logs, outdir, num-i)
 		if err != nil {
 			return err
 		}
+
+		allSummaries += sum
 	}
 
-	// TODO: Summary of the branch (all commits)
-
-	if c.debug {
-		fmt.Printf("\n----- Total token usage ----- \n%d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
-	}
-
-	return nil
-}
-
-func (c *cli) sumCommit(logs, dir string, fnum int) error {
-	csum := []*openai.Message{
+	messages := []*openai.Message{
 		system, {
 			Role:    "user",
-			Content: fmt.Sprintf(inst_c, c.cfg.FullLang(), logs),
+			Content: fmt.Sprintf(inst_b, c.cfg.FullLang(), allSummaries),
 		},
 	}
-
-	res, err := c.client.Chat(csum)
+	if c.debug {
+		c.pp(messages)
+	}
+	res, err := c.client.Chat(messages)
 	if err != nil {
 		return err
 	}
+	if c.debug {
+		fmt.Printf("\n----- Response -----\n%s\n", res.Choices[0].Message.Content)
+		fmt.Printf("\n----- Usages -----\ntotal: %d (prompt: %d, completion: %d)\n", res.Usage.TotalTokens, res.Usage.PromptTokens, res.Usage.CompletionTokens)
+	}
 
-	file, err := os.Create(filepath.Join(dir, fmt.Sprintf("c2-%03d", fnum)))
+	path := filepath.Join(outdir, "summary.txt")
+	file, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-
 	_, err = file.WriteString(res.Choices[0].Message.Content + "\n")
 	if err != nil {
 		return err
 	}
 	if c.debug {
-		fmt.Printf("\n----- Saved file ----- \n%s\n", filepath.Join(dir, fmt.Sprintf("c2-%03d", fnum)))
+		fmt.Printf("\n----- Saved file ----- \n%s\n", path)
 	}
 
+	prompt += res.Usage.PromptTokens
+	completion += res.Usage.CompletionTokens
+
 	return nil
+}
+
+func (c *cli) sumCommit(logs, dir string, fnum int) (string, error) {
+	messages := []*openai.Message{
+		system, {
+			Role:    "user",
+			Content: fmt.Sprintf(inst_c, c.cfg.FullLang(), logs),
+		},
+	}
+	if c.debug {
+		c.pp(messages)
+	}
+
+	res, err := c.client.Chat(messages)
+	if err != nil {
+		return "", err
+	}
+
+	path := filepath.Join(dir, fmt.Sprintf("CS%05d", fnum))
+	file, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	content := res.Choices[0].Message.Content + "\n"
+	_, err = file.WriteString(content)
+	if err != nil {
+		return "", err
+	}
+	if c.debug {
+		fmt.Printf("\n----- Saved file ----- \n%s\n", path)
+	}
+
+	return content, nil
+}
+
+func (c *cli) pp(messages []*openai.Message) {
+	fmt.Printf("\n----- Prompts -----\n")
+	for _, m := range messages {
+		fmt.Printf("--- %s --- \n%s\n", m.Role, m.Content)
+	}
 }
 
 // func (c *cli) read(path string) (string, error) {

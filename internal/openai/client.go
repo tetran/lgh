@@ -65,7 +65,7 @@ func (c *Client) Chat(messages []*Message) (*ChatResponse, error) {
 	req.Header.Set("Authorization", "Bearer "+c.ApiKey)
 
 	client := http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 60 * time.Second,
 	}
 	res, err := client.Do(req)
 	if err != nil {
