@@ -14,14 +14,14 @@ func TestCommitsOnBranch(t *testing.T) {
 
 	defaultBranch, err := initTestRepo(tempDir)
 	if err != nil {
-		t.Fatalf("failed to initialize test repository: %v", err)
+		t.Fatal(err)
 	}
 
 	// Create a test file and commit it to the repository
 	testFile := "test.txt"
 	err = createCommit(tempDir, testFile, "initial content", "Initial commit")
 	if err != nil {
-		t.Fatalf("failed to create commit: %v", err)
+		t.Fatal(err)
 	}
 
 	// Create a new Repository instance for the test
@@ -81,20 +81,28 @@ func TestCommitsOnBranch(t *testing.T) {
 
 // Initialize a new git repository in the temporary directory
 func initTestRepo(dir string) (string, error) {
-	cmd := exec.Command("git", "init")
-	cmd.Dir = dir
-	err := cmd.Run()
+	_, err := execGit(dir, "init")
 	if err != nil {
 		return "", err
 	}
 
 	// Remember default branch name
-	cmd = exec.Command("git", "branch", "--show-current")
-	cmd.Dir = dir
-	cmdOutput, _ := cmd.Output()
-	defaultBranch := string(cmdOutput)
+	ret, err := execGit(dir, "branch", "--show-current")
+	if err != nil {
+		return "", err
+	}
+	defaultBranch := string(ret)
 	defaultBranch = defaultBranch[:len(defaultBranch)-1]
 	fmt.Printf("Default branch: %s\n", defaultBranch)
+
+	_, err = execGit(dir, "config", "user.email", "test@example.com")
+	if err != nil {
+		return "", fmt.Errorf("failed to set user email: %v", err)
+	}
+	_, err = execGit(dir, "config", "user.name", "Test User")
+	if err != nil {
+		return "", fmt.Errorf("failed to set user name: %v", err)
+	}
 
 	return defaultBranch, nil
 }
@@ -103,19 +111,26 @@ func initTestRepo(dir string) (string, error) {
 func createCommit(tempDir, testFile, fileContent, message string) error {
 	err := os.WriteFile(tempDir+"/"+testFile, []byte(fileContent), 0644)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to write file: %v", err)
 	}
-	cmd := exec.Command("git", "add", testFile)
-	cmd.Dir = tempDir
-	err = cmd.Run()
+
+	_, err = execGit(tempDir, "add", testFile)
 	if err != nil {
 		return err
 	}
-	cmd = exec.Command("git", "commit", "-m", message)
-	cmd.Dir = tempDir
-	err = cmd.Run()
+	_, err = execGit(tempDir, "commit", "-m", message)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+func execGit(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to execute git command: %v\noutput: %s", err, out)
+	}
+	return string(out), nil
 }
