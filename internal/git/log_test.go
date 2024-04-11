@@ -21,7 +21,7 @@ func TestCommitsOnBranch(t *testing.T) {
 	testFile := "test.txt"
 	err = createCommit(tempDir, testFile, "initial content", "Initial commit")
 	if err != nil {
-		t.Fatalf("failed to create commit: %v", err)
+		t.Fatal(err)
 	}
 
 	// Create a new Repository instance for the test
@@ -103,19 +103,19 @@ func initTestRepo(dir string) (string, error) {
 func createCommit(tempDir, testFile, fileContent, message string) error {
 	err := os.WriteFile(tempDir+"/"+testFile, []byte(fileContent), 0644)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to write file: %v", err)
 	}
 	cmd := exec.Command("git", "add", testFile)
 	cmd.Dir = tempDir
 	err = cmd.Run()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to add file: %v", err)
 	}
 	cmd = exec.Command("git", "commit", "-m", message)
 	cmd.Dir = tempDir
 	err = cmd.Run()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to commit: %v", err)
 	}
 	return nil
 }
