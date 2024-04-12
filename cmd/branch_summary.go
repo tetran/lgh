@@ -113,7 +113,7 @@ func branchSummary(cmd *cobra.Command, args []string) {
 	}
 	cli := &cli{
 		repo:   &git.Repository{Path: current},
-		client: &openai.Client{ApiKey: cfg.ApiKey, Model: model},
+		client: &openai.Client{ApiKey: cfg.ApiKey, Model: model, Debug: debug},
 		cfg:    cfg,
 		base:   base,
 		tgt:    tgt,
@@ -206,7 +206,7 @@ func (c *cli) summarize(outdir string) error {
 
 	prompt, completion := 0, 0
 	defer func() {
-		fmt.Printf("\n----- Total token usage ----- \n%d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
+		fmt.Printf("\n## Total token usage\n%d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
 	}()
 	var allSummaries string
 	for i, commit := range commits {
@@ -237,18 +237,11 @@ func (c *cli) summarize(outdir string) error {
 				Role:    "user",
 				Content: fmt.Sprintf(inst_d, c.cfg.FullLang(), body),
 			})
-			if c.debug {
-				c.pp(messages)
-			}
 			res, err := c.client.Chat(messages)
 			if err != nil {
 				return err
 			}
 
-			if c.debug {
-				fmt.Printf("\n----- Response -----\n%s\n", res.Choices[0].Message.Content)
-				fmt.Printf("\n----- Usages -----\ntotal: %d (prompt: %d, completion: %d)\n", res.Usage.TotalTokens, res.Usage.PromptTokens, res.Usage.CompletionTokens)
-			}
 			prompt += res.Usage.PromptTokens
 			completion += res.Usage.CompletionTokens
 
@@ -273,16 +266,9 @@ func (c *cli) summarize(outdir string) error {
 			Content: fmt.Sprintf(inst_b, c.cfg.FullLang(), allSummaries),
 		},
 	}
-	if c.debug {
-		c.pp(messages)
-	}
 	res, err := c.client.Chat(messages)
 	if err != nil {
 		return err
-	}
-	if c.debug {
-		fmt.Printf("\n----- Response -----\n%s\n", res.Choices[0].Message.Content)
-		fmt.Printf("\n----- Usages -----\ntotal: %d (prompt: %d, completion: %d)\n", res.Usage.TotalTokens, res.Usage.PromptTokens, res.Usage.CompletionTokens)
 	}
 	prompt += res.Usage.PromptTokens
 	completion += res.Usage.CompletionTokens
@@ -303,10 +289,6 @@ func (c *cli) sumCommit(logs, dir string, fnum int) (string, error) {
 			Content: fmt.Sprintf(inst_c, c.cfg.FullLang(), logs),
 		},
 	}
-	if c.debug {
-		c.pp(messages)
-	}
-
 	res, err := c.client.Chat(messages)
 	if err != nil {
 		return "", err
@@ -316,10 +298,6 @@ func (c *cli) sumCommit(logs, dir string, fnum int) (string, error) {
 	path := filepath.Join(dir, fmt.Sprintf("CS%05d", fnum))
 	if err = c.saveFile(path, content); err != nil {
 		return "", err
-	}
-
-	if c.debug {
-		fmt.Printf("\n----- Saved file ----- \n%s\n", path)
 	}
 
 	return content, nil
@@ -337,17 +315,10 @@ func (c *cli) saveFile(path, content string) error {
 	}
 
 	if c.debug {
-		fmt.Printf("\n----- Saved file ----- \n%s\n", path)
+		fmt.Printf("\n## Saved file\n%s\n", path)
 	}
 
 	return nil
-}
-
-func (c *cli) pp(messages []*openai.Message) {
-	fmt.Printf("\n----- Prompts -----\n")
-	for _, m := range messages {
-		fmt.Printf("--- %s --- \n%s\n", m.Role, m.Content)
-	}
 }
 
 // func (c *cli) read(path string) (string, error) {
