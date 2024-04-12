@@ -38,6 +38,7 @@ type Usage struct {
 type Client struct {
 	ApiKey string
 	Model  string
+	Debug  bool
 }
 
 func (c *Client) Chat(messages []*Message) (*ChatResponse, error) {
@@ -46,6 +47,9 @@ func (c *Client) Chat(messages []*Message) (*ChatResponse, error) {
 		Model:       c.Model,
 		Messages:    messages,
 		Temperature: 0.7,
+	}
+	if c.Debug {
+		creq.print()
 	}
 	body, err := json.Marshal(creq)
 	if err != nil {
@@ -82,5 +86,29 @@ func (c *Client) Chat(messages []*Message) (*ChatResponse, error) {
 		return nil, err
 	}
 
+	if c.Debug {
+		cres.print()
+	}
+
 	return cres, nil
+}
+
+func (r *ChatRequest) print() {
+	fmt.Printf("\n## Chat Request\n")
+	fmt.Println("### Model")
+	fmt.Println(r.Model)
+	fmt.Println("### Prompts")
+	for _, m := range r.Messages {
+		fmt.Printf("- %s \n%s\n", m.Role, m.Content)
+	}
+}
+
+func (r *ChatResponse) print() {
+	fmt.Printf("\n## Chat Response\n")
+	fmt.Printf("### Choice\n%s\n", r.Choices[0].Message.Content)
+	fmt.Printf(
+		"\n### Usages\ntotal: %d (prompt: %d, completion: %d)\n",
+		r.Usage.TotalTokens,
+		r.Usage.PromptTokens,
+		r.Usage.CompletionTokens)
 }

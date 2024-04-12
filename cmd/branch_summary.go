@@ -113,7 +113,7 @@ func branchSummary(cmd *cobra.Command, args []string) {
 	}
 	cli := &cli{
 		repo:   &git.Repository{Path: current},
-		client: &openai.Client{ApiKey: cfg.ApiKey, Model: model},
+		client: &openai.Client{ApiKey: cfg.ApiKey, Model: model, Debug: debug},
 		cfg:    cfg,
 		base:   base,
 		tgt:    tgt,
@@ -202,27 +202,21 @@ func (c *cli) summarize(outdir string) error {
 		return err
 	}
 	num := len(commits)
-	fmt.Println("Number of commits:", num)
+	fmt.Printf("[Commits] %d\n", num)
 
 	prompt, completion := 0, 0
-	if c.debug {
-		defer func() {
-			fmt.Printf("\n----- Total token usage ----- \n%d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
-		}()
-	}
+	defer func() {
+		fmt.Printf("[Token usage] %d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
+	}()
 	var allSummaries string
 	for i, commit := range commits {
 		if commit.IsMerge {
-			file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("CS%05d", num-i)))
-			if err != nil {
+			if err = c.saveFile(
+				filepath.Join(outdir, fmt.Sprintf("CS%05d", num-i)),
+				fmt.Sprintf("* Merged: %s", commit.Message)); err != nil {
 				return err
 			}
-			defer file.Close()
-
-			_, err = file.WriteString(fmt.Sprintf("* Merged: %s", commit.Message))
-			if err != nil {
-				return err
-			}
+			fmt.Print(".")
 			continue
 		}
 
@@ -230,11 +224,6 @@ func (c *cli) summarize(outdir string) error {
 		if err != nil {
 			return err
 		}
-		file, err := os.Create(filepath.Join(outdir, fmt.Sprintf("CL%05d", num-i)))
-		if err != nil {
-			return err
-		}
-		defer file.Close()
 
 		logs := fmt.Sprintf("%s\n## Change details:\n", info)
 		sps := []*openai.Message{
@@ -248,35 +237,27 @@ func (c *cli) summarize(outdir string) error {
 				Role:    "user",
 				Content: fmt.Sprintf(inst_d, c.cfg.FullLang(), body),
 			})
-			if c.debug {
-				c.pp(messages)
-			}
 			res, err := c.client.Chat(messages)
 			if err != nil {
 				return err
 			}
 
-			if c.debug {
-				fmt.Printf("\n----- Response -----\n%s\n", res.Choices[0].Message.Content)
-				fmt.Printf("\n----- Usages -----\ntotal: %d (prompt: %d, completion: %d)\n", res.Usage.TotalTokens, res.Usage.PromptTokens, res.Usage.CompletionTokens)
-			}
 			prompt += res.Usage.PromptTokens
 			completion += res.Usage.CompletionTokens
 
 			logs += res.Choices[0].Message.Content + "\n"
 		}
 
-		_, err = file.WriteString(logs)
-		if err != nil {
+		if err = c.saveFile(filepath.Join(outdir, fmt.Sprintf("CL%05d", num-i)), logs); err != nil {
 			return err
 		}
-
 		sum, err := c.sumCommit(logs, outdir, num-i)
 		if err != nil {
 			return err
 		}
 
 		allSummaries += sum
+		fmt.Print(".")
 	}
 
 	messages := []*openai.Message{
@@ -285,35 +266,20 @@ func (c *cli) summarize(outdir string) error {
 			Content: fmt.Sprintf(inst_b, c.cfg.FullLang(), allSummaries),
 		},
 	}
-	if c.debug {
-		c.pp(messages)
-	}
 	res, err := c.client.Chat(messages)
 	if err != nil {
 		return err
 	}
-	if c.debug {
-		fmt.Printf("\n----- Response -----\n%s\n", res.Choices[0].Message.Content)
-		fmt.Printf("\n----- Usages -----\ntotal: %d (prompt: %d, completion: %d)\n", res.Usage.TotalTokens, res.Usage.PromptTokens, res.Usage.CompletionTokens)
-	}
-
-	path := filepath.Join(outdir, "summary.txt")
-	file, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = file.WriteString(res.Choices[0].Message.Content + "\n")
-	if err != nil {
-		return err
-	}
-	if c.debug {
-		fmt.Printf("\n----- Saved file ----- \n%s\n", path)
-	}
-
 	prompt += res.Usage.PromptTokens
 	completion += res.Usage.CompletionTokens
 
+	path := filepath.Join(outdir, "summary.txt")
+	if err = c.saveFile(
+		path,
+		res.Choices[0].Message.Content); err != nil {
+		return err
+	}
+	fmt.Printf("\n[Result file] %s\n", path)
 	return nil
 }
 
@@ -324,39 +290,36 @@ func (c *cli) sumCommit(logs, dir string, fnum int) (string, error) {
 			Content: fmt.Sprintf(inst_c, c.cfg.FullLang(), logs),
 		},
 	}
-	if c.debug {
-		c.pp(messages)
-	}
-
 	res, err := c.client.Chat(messages)
 	if err != nil {
 		return "", err
 	}
+	content := res.Choices[0].Message.Content + "\n"
 
 	path := filepath.Join(dir, fmt.Sprintf("CS%05d", fnum))
-	file, err := os.Create(path)
-	if err != nil {
+	if err = c.saveFile(path, content); err != nil {
 		return "", err
-	}
-	defer file.Close()
-
-	content := res.Choices[0].Message.Content + "\n"
-	_, err = file.WriteString(content)
-	if err != nil {
-		return "", err
-	}
-	if c.debug {
-		fmt.Printf("\n----- Saved file ----- \n%s\n", path)
 	}
 
 	return content, nil
 }
 
-func (c *cli) pp(messages []*openai.Message) {
-	fmt.Printf("\n----- Prompts -----\n")
-	for _, m := range messages {
-		fmt.Printf("--- %s --- \n%s\n", m.Role, m.Content)
+func (c *cli) saveFile(path, content string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
 	}
+	defer file.Close()
+	_, err = file.WriteString(content)
+	if err != nil {
+		return err
+	}
+
+	if c.debug {
+		fmt.Printf("\n## Saved file\n%s\n", path)
+	}
+
+	return nil
 }
 
 // func (c *cli) read(path string) (string, error) {
