@@ -202,11 +202,11 @@ func (c *cli) summarize(outdir string) error {
 		return err
 	}
 	num := len(commits)
-	fmt.Println("Number of commits:", num)
+	fmt.Printf("[Commits] %d\n", num)
 
 	prompt, completion := 0, 0
 	defer func() {
-		fmt.Printf("\n## Total token usage\n%d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
+		fmt.Printf("[Token usage] %d (prompt: %d, completion: %d)\n", prompt+completion, prompt, completion)
 	}()
 	var allSummaries string
 	for i, commit := range commits {
@@ -273,12 +273,13 @@ func (c *cli) summarize(outdir string) error {
 	prompt += res.Usage.PromptTokens
 	completion += res.Usage.CompletionTokens
 
+	path := filepath.Join(outdir, "summary.txt")
 	if err = c.saveFile(
-		filepath.Join(outdir, "summary.txt"),
+		path,
 		res.Choices[0].Message.Content); err != nil {
 		return err
 	}
-
+	fmt.Printf("\n[Result file] %s\n", path)
 	return nil
 }
 
